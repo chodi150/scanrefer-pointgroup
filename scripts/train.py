@@ -28,7 +28,7 @@ def get_dataloader(args, scanrefer, all_scene_list, split, config, augment):
     dataset = ScannetReferenceDataset(
         scanrefer=scanrefer[split], 
         scanrefer_all_scene=all_scene_list, 
-        split=split, 
+        split=split,
         num_points=args.num_points, 
         use_height=(not args.no_height),
         use_color=args.use_color, 
@@ -36,7 +36,7 @@ def get_dataloader(args, scanrefer, all_scene_list, split, config, augment):
         use_multiview=args.use_multiview
     )
     # dataloader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True)
-    dataloader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True, num_workers=4)
+    dataloader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True, num_workers=4,  collate_fn=dataset.trainMerge)
 
     return dataset, dataloader
 
@@ -141,10 +141,10 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--tag", type=str, help="tag for the training, e.g. cuda_wl", default="")
     parser.add_argument("--gpu", type=str, help="gpu", default="0")
-    parser.add_argument("--batch_size", type=int, help="batch size", default=8)
-    parser.add_argument("--epoch", type=int, help="number of epochs", default=10)
+    parser.add_argument("--batch_size", type=int, help="batch size", default=3)
+    parser.add_argument("--epoch", type=int, help="number of epochs", default=150)
     parser.add_argument("--verbose", type=int, help="iterations of showing verbose", default=1)
-    parser.add_argument("--val_step", type=int, help="iterations of validating", default=5000)
+    parser.add_argument("--val_step", type=int, help="iterations of validating", default=10000)
     parser.add_argument("--lr", type=float, help="learning rate", default=1e-3)
     parser.add_argument("--wd", type=float, help="weight decay", default=1e-5)
     parser.add_argument('--num_points', type=int, default=40000, help='Point Number [default: 40000]')

@@ -9,10 +9,9 @@ import numpy as np
 import os
 import sys
 from torch.nn.utils.rnn import pack_padded_sequence
+from lib.config import CONF
 
 sys.path.append(os.path.join(os.getcwd(), "lib")) # HACK add the lib folder
-import lib.pointnet2.pointnet2_utils
-from lib.pointnet2.pointnet2_modules import PointnetSAModuleVotes
 from utils.nn_distance import nn_distance
 
 def decode_scores(net, data_dict, num_class, num_heading_bin, num_size_cluster, mean_size_arr):
@@ -55,20 +54,12 @@ class RefModule(nn.Module):
         self.sampling = sampling
         self.use_lang_classifier = use_lang_classifier
         self.seed_feat_dim = seed_feat_dim
+        self.glove_embed_dim = 300
 
-        # Vote clustering
-        self.vote_aggregation = PointnetSAModuleVotes( 
-            npoint=self.num_proposal,
-            radius=0.3,
-            nsample=16,
-            mlp=[self.seed_feat_dim, 128, 128, 128],
-            use_xyz=True,
-            normalize_xyz=True
-        )
 
         # --------- FEATURE FUSION ---------
         self.gru = nn.GRU(
-            input_size=300,
+            input_size=self.glove_embed_dim,
             hidden_size=256,
             batch_first=True
         )
@@ -80,6 +71,7 @@ class RefModule(nn.Module):
             nn.Conv1d(in_channels=128 + 128, out_channels=128, kernel_size=1),
             nn.ReLU()
         )
+        self.features_up_proj = nn.Linear(16, 128)
 
         # language classifier
         if use_lang_classifier:
@@ -98,7 +90,7 @@ class RefModule(nn.Module):
             nn.Conv1d(128,1,1),
             nn.Dropout()
         )
-        
+
         self.bn1 = nn.BatchNorm1d(128)
         self.bn2 = nn.BatchNorm1d(128)
 
@@ -110,25 +102,13 @@ class RefModule(nn.Module):
         Returns:
             scores: (B,num_proposal,2+3+NH*2+NS*4) 
         """
-
-        # Farthest point sampling (FPS) on votes
-        xyz, features, fps_inds = self.vote_aggregation(xyz, features)
-        sample_inds = fps_inds
-
-        data_dict['aggregated_vote_xyz'] = xyz # (batch_size, num_proposal, 3)
-        data_dict['aggregated_vote_features'] = features.permute(0, 2, 1).contiguous() # (batch_size, num_proposal, 128)
-        data_dict['aggregated_vote_inds'] = sample_inds # (batch_size, num_proposal,) # should be 0,1,2,...,num_proposal
-
-        # --------- PROPOSAL GENERATION ---------
-        net = F.relu(self.bn1(self.conv1(features))) 
-        net = F.relu(self.bn2(self.conv2(net))) 
-        net = self.conv3(net) # (batch_size, 2+3+num_heading_bin*2+num_size_cluster*4, num_proposal)
-
-        data_dict = decode_scores(net, data_dict, self.num_class, self.num_heading_bin, self.num_size_cluster, self.mean_size_arr)
-
         # --------- FEATURE FUSION ---------
-        lang_feat = data_dict["lang_feat"]
-        lang_feat = pack_padded_sequence(lang_feat, data_dict["lang_len"], batch_first=True, enforce_sorted=False)
+        bs = features.shape[0]
+
+        lang_feat = data_dict["lang_feat"].cuda().view(bs, CONF.TRAIN.MAX_DES_LEN ,self.glove_embed_dim)
+        lang_len = data_dict['lang_len'].view(bs, -1).view(-1)
+
+        lang_feat = pack_padded_sequence(lang_feat, lang_len, batch_first=True, enforce_sorted=False)
     
         # encode description
         _, lang_feat = self.gru(lang_feat)
@@ -140,12 +120,20 @@ class RefModule(nn.Module):
             data_dict["lang_scores"] = self.lang_cls(lang_feat[:, :, 0])
         
         # fuse
+        # print(f"lang_feat.shape: {lang_feat.shape}")
+
+
+        n_prop = features.shape[1]
+        features = self.features_up_proj(features.view(bs*n_prop, -1)).view(bs, n_prop, -1)
+        features = features.transpose(dim0=1, dim1=2)
+        # print(f"features.shape: {features.shape}")
         features = self.feat_fuse(torch.cat([features, lang_feat], dim=1))
 
         # --------- REFERENCE PREDICTION ---------
-        masked_features = features * data_dict['objectness_scores'].max(2)[1].float().unsqueeze(1).repeat(1, 128, 1)
-        
+        proposal_mask = data_dict['proposal_mask'].unsqueeze(1).repeat(1, 128, 1).float().cuda()
+        masked_features = features * proposal_mask
         data_dict['cluster_ref'] = self.conv4(masked_features).squeeze(1)
-        
+
+        # print(f"data_dict['cluster_ref']: {data_dict['cluster_ref'].shape}")
         return data_dict
 
